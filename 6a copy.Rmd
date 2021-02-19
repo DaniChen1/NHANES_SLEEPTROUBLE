@@ -1,0 +1,190 @@
+```{r}
+library(pacman)
+p_load(mosaicData,tidyverse, tidymodels, yardstick, 
+       NHANES, rpart, rpart.plot, class, gmodels)
+```
+
+Drop the id feature.
+
+```{r}
+sapply(NHANES, function(x) {length(unique(x))}) 
+NHANES <- NHANES %>% select(-c(ID, SurveyYr))
+```
+Examine the number of missing data for each column. 
+
+```{r}
+sapply(NHANES, function(x) sum(is.na(x))) %>% sort()
+```
+Drop the features that have a large number of missing values. 
+
+```{r}
+nhanes <- NHANES %>% 
+  select(SleepTrouble, Gender, Age, Race1, HomeOwn, HomeRooms,
+         Weight, Diabetes, Height, BMI, Poverty, HHIncomeMid) %>%
+  na.omit()
+```
+
+Separate the data set uniformly at random into 75% training and 25% testing sets.
+
+```{r}
+set.seed(123)
+df <- nhanes %>%
+  initial_split(prop = 0.75)
+train <- df %>% training()
+test <- df %>% testing()
+list(train, test) %>% map_int(nrow)
+```
+
+## Null model
+
+Compute the observed percentage of people having sleep trouble (25.46%).   
+The majority of the people in the data set are not having sleep trouble. Therefore, in the null model, we predict everyone is not having sleep trouble. And the accuracy is 74.54% (1-25.46%). 
+
+```{r}
+mod_null <- train %>% select(SleepTrouble) %>%
+        count(SleepTrouble) %>%
+        mutate(pct = n/sum(n))
+mod_null
+```
+Create a logistic regression model with no explanatory variables, and the accuracy is 74.54%, which is the same as the prior model's.  
+```{r}
+mod_log_null <- logistic_reg(mode = 'classification') %>%
+        set_engine('glm') %>%
+        fit(SleepTrouble ~ 1, data = train)
+pred <- train %>%
+        select(SleepTrouble, Age) %>%
+        bind_cols(
+                predict(mod_log_null, new_data = train, type = 'class')
+        ) %>%
+        rename(SleepTrouble_null = .pred_class)
+accuracy(pred, SleepTrouble, SleepTrouble_null)
+```
+The confusion matrix shows the null model correctly predict 3924 people do not have sleep trouble, and predict 1340 people are not having sleep trouble but they actually have the sleep trouble. 
+
+```{r}
+confusion_null <- pred %>%
+        conf_mat(truth = SleepTrouble, estimate = SleepTrouble_null)
+confusion_null
+```
+
+## Logistic regression
+
+Recode the *SleepTrouble* variable into 0 and 1, making 1 to represent 'Yes' (have sleep trouble). 
+
+```{r}
+set.seed(123)
+dfl <- nhanes %>%
+  mutate(sleeptrouble = as.integer(SleepTrouble)-1) %>%
+  select(-1) %>%
+  initial_split(prop = 0.75)
+trainl <- dfl %>% training()
+testl <- dfl %>% testing()
+list(trainl, testl) %>% map_int(nrow)
+```
+
+Fit the logistic regression model with all predictor variables.
+
+```{r}
+mod_log <- glm(sleeptrouble ~ ., family = binomial, data = trainl)
+anova(mod_log, test='Chisq')
+```
+Drop the insignificant predictors, alpha = 0.05.
+
+```{r}
+mod_log <- glm(sleeptrouble ~ Gender + Age + 
+                 Weight + Diabetes + Race1 + HomeOwn + Poverty, data = trainl)
+anova(mod_log, test = 'Chisq')
+```
+Check accuracy. 74.37% does not improve from the null model using logistic regression model. 
+
+```{r}
+pred_log <- predict(mod_log, newdata = trainl, type = 'response')
+pred_log <- ifelse(pred_log > 0.5, 1, 0)
+
+error <- mean(pred_log != trainl$sleeptrouble)
+accuracy_log <- 1 - error
+accuracy_log
+```
+
+Confusion matrix.
+
+```{r}
+cm_log <- table(prediction = pred_log, 
+                actual = trainl$sleeptrouble)
+addmargins(cm_log)
+```
+
+
+
+## K-NN
+
+```{r}
+df_knn <- NHANES %>% 
+  select(SleepTrouble, Age, HomeRooms, Height, 
+         BMI, Poverty, HHIncomeMid, Weight) %>%
+  na.omit()
+
+set.seed(123)
+df_knn <- df_knn %>%
+  initial_split(prop = 0.75)
+train_knn <- df_knn %>% training()
+test_knn <- df_knn %>% testing()
+list(train_knn, test_knn) %>% map_int(nrow)
+```
+
+```{r}
+sleep_rec <- 
+  recipe(SleepTrouble ~ ., data = train_knn) %>%
+  step_normalize(all_predictors()) %>%
+  prep()
+summary(sleep_rec)
+```
+```{r}
+set.seed(1234)
+tune_spec <- 
+  nearest_neighbor(neighbors = tune()) %>%
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+tune_grid <- seq(5, 23, by = 2)
+
+sleep_wflow <-
+  workflow() %>%
+  add_recipe(sleep_rec) %>%
+  add_model(tune_spec)
+
+folds <- vfold_cv(train_knn, v = 10)
+
+sleep_fit <- 
+  sleep_wflow %>% 
+  tune_grid(
+    resamples = folds,
+    grid = tune_grid
+    ) 
+
+sleep_fit %>% select_best('accuracy')
+```
+```{r}
+collect_metrics(sleep_fit) %>% filter(neighbors == 3)
+```
+```{r}
+rec <- 
+  recipe(SleepTrouble ~ ., data = train_knn) %>%
+  step_normalize(all_predictors()) %>%
+  prep()
+train_prep <- bake(rec, train_knn)
+test_prep <- bake(rec, test_knn)
+
+cl <- train_prep[,8,drop=TRUE]
+train_pred <- knn(train_prep[1:7], train_prep[1:7], cl, k = 3)
+train_knn <- as.data.frame(train_knn)
+CrossTable(train_knn[,1], train_pred, prop.chisq = FALSE)
+
+error <- mean(train_pred != train_knn[,1])
+accuracy <- 1 - error
+print(paste('Accuracy: ', accuracy))
+```
+
+
+
+
