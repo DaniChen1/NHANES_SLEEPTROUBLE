@@ -1,0 +1,137 @@
+```{r}
+library(pacman)
+p_load(mosaicData,tidyverse, tidymodels, yardstick, 
+       NHANES, rpart, rpart.plot, pROC, Amelia)
+```
+
+```{r}
+sapply(NHANES, function(x) {length(unique(x))}) 
+NHANES <- NHANES %>% select(-c(ID, SurveyYr))
+```
+
+```{r}
+sapply(NHANES, function(x) sum(is.na(x))) %>% sort()
+```
+
+# 6b.
+
+## Null model
+
+```{r}
+set.seed(123)
+df <- NHANES %>%
+  select(SleepHrsNight, Gender, Age, HomeOwn, HomeRooms, Weight, Race1,  
+         Education, Work, 
+         Diabetes, Poverty, HHIncomeMid, DaysMentHlthBad) %>%
+  na.omit() %>%
+  initial_split(prop = 0.75)
+train <- df %>% training()
+test <- df %>% testing()
+list(train, test) %>% map_int(nrow)
+```
+
+```{r}
+mod_null <- train %>% 
+  summarise(sleep_null = mean(SleepHrsNight))
+mod_null
+```
+```{r}
+mod_reg_null <- linear_reg() %>%
+  set_engine('lm') %>%
+  fit(SleepHrsNight ~ 1, data = train)
+
+pred <- train %>% select(SleepHrsNight) %>%
+  bind_cols(predict(mod_reg_null, train)) %>%
+  rename(sleep_null = .pred)
+head(pred)
+```
+```{r}
+pred %>% ggplot(aes(x = SleepHrsNight, y = sleep_null)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  ggtitle("Predicted values vs True values for null model")
+```
+
+
+```{r}
+mod_lm <- lm(SleepHrsNight ~ ., data = train)
+anova(mod_lm)
+```
+
+```{r}
+mod_lm <- lm(SleepHrsNight ~ Gender + HomeOwn + Race1 +
+               Race1 + Work + DaysMentHlthBad, data = train)
+anova(mod_lm)
+```
+
+```{r}
+pred_rg <- train %>% 
+  bind_cols(predict(mod_lm, train)) %>%
+  rename(sleep_reg = ...14)
+head(pred_rg)
+```
+```{r}
+pred_rg %>% ggplot(aes(x = SleepHrsNight, y = sleep_reg, col = Gender)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  ggtitle("Predicted values vs True values for multiple regression model")
+```
+```{r}
+pred_lm <- predict(mod_lm, test)
+
+cor(pred_lm, test$SleepHrsNight)
+# function to calculate the mean absolute error
+MAE <- function(actual, predicted) {
+  mean(abs(actual - predicted))  
+}
+
+# mean absolute error between predicted and actual values
+m_pa <- MAE(test$SleepHrsNight, pred_lm)
+m_pa
+# mean absolute error between actual values and mean value
+mean <- mean(train$SleepHrsNight) 
+MAE(mean, train$SleepHrsNight)
+```
+
+
+
+## Decision Tree using CART
+
+```{r}
+nhanes <- NHANES %>% 
+  select(SleepHrsNight, Gender, Age, HomeOwn, Diabetes,
+         DaysMentHlthBad, Work, Poverty) %>%
+  na.omit()
+
+set.seed(123)
+df <- nhanes %>%
+  initial_split(prop = 0.75)
+train <- df %>% training()
+test <- df %>% testing()
+```
+
+```{r}
+mod_rpart <- rpart(SleepHrsNight ~ ., data = train)
+rpart.plot(mod_rpart, digits = 3, type = 4)
+```
+```{r}
+pred_rpart <- predict(mod_rpart, test)
+summary(pred_rpart)
+summary(test$SleepHrsNight)
+```
+
+```{r}
+cor(pred_rpart, test$SleepHrsNight)
+# function to calculate the mean absolute error
+MAE <- function(actual, predicted) {
+  mean(abs(actual - predicted))  
+}
+
+# mean absolute error between predicted and actual values
+m_pa <- MAE(test$SleepHrsNight, pred_rpart)
+m_pa
+# mean absolute error between actual values and mean value
+mean <- mean(train$SleepHrsNight) 
+MAE(mean, train$SleepHrsNight)
+```
+
